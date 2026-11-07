@@ -17,6 +17,27 @@ if ! grep -q '^src-git vantage ' feeds.conf.default; then
 else
 	echo "    already present"
 fi
+# Mirror scripts/feeds' own parser so a malformed feeds.conf.default fails
+# here (in seconds) instead of 2 minutes into a cloud build. Note that
+# s/#.+$// requires at least one character after '#': a bare '#' is NOT a
+# comment to scripts/feeds and is reported as "Syntax error ... line N".
+python3 - <<'PY'
+import pathlib, re, sys
+p = pathlib.Path('feeds.conf.default')
+lines = p.read_text().splitlines()
+bad = []
+for n, raw in enumerate(lines, 1):
+    line = re.sub(r'#.+$', '', raw)
+    if not line.strip():
+        continue
+    if not re.match(r'^src-([\w\-]+)((?:\s+--\w+(?:=\S+)?)*)\s+(\w+)(?:\s+(\S.*))?$', line):
+        bad.append((n, raw.strip()))
+if bad:
+    for n, text in bad:
+        print('  invalid feeds.conf.default line %d: %r' % (n, text), file=sys.stderr)
+    sys.exit('ERROR: scripts/feeds would reject feeds.conf.default')
+print('    feeds.conf.default syntax OK (%d lines)' % len(lines))
+PY
 
 echo "=== [2/7] slim DEFAULT_PACKAGES.router (size budget) ==="
 python3 - <<'PY'

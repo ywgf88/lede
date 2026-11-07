@@ -1,6 +1,10 @@
 # Extra feeds for the MT7981 custom build.
 # scripts/prepare.sh appends this file to feeds.conf.default exactly once.
-#
+# ---------------------------------------------------------------------
+# NOTE: never write a bare `#` line here. scripts/feeds strips comments with
+#       s/#.+$// which needs at least one character after the hash; a lone
+#       `#` survives as a non-empty line and makes the whole file invalid.
+# ---------------------------------------------------------------------
 # Verified on 2026-11-07:
 #  * xiaorouji/openwrt-passwall2 is GONE (404). Upstream moved to the
 #    Openwrt-Passwall organisation; that is the URL used below.
