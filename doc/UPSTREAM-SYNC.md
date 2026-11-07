@@ -2,6 +2,15 @@
 
 配套工作流：`.github/workflows/sync-upstream.yml`。
 
+## 当前状态（2026-11-07 已部署）
+
+- 工作流与本文档已在默认分支 `custom/mt7981` 上，部署 commit `0d578a2f4adaa5a10ad14ba264e5ced2011d8b5e`。
+- `master` 镜像分支存在，指向 `55897b73604c`；与上游 `coolsnowwolf/lede:master` 一致。
+- 已实跑一次 `dry_run`（run `42324702984`）：`success`，三个推送步骤全部 skipped，两个分支 SHA 前后未变，零副作用。
+- 部署时点上游无新提交，故该次 dry_run 输出 `Already up to date at 55897b73604c`；**完整的快进 + 合并路径尚未实跑过**，第一次会在上游产生新 commit 后的那一轮定时同步中执行。
+- 已验证「编译占用检测」：`actions/workflows/build-mt7981.yml/runs?status=in_progress` 在 run #3 编译期间返回 `total_count=1`，工作流会置 `busy=true` 并跳过对 `custom/mt7981` 的合并。
+- 本地工作副本 `lede-src` 的 `custom/mt7981` 已与远端对齐到同一 commit，可直接 push。
+
 ## 分支结构与同步策略
 
 | 分支 | 内容 | 谁可以改 |
@@ -17,25 +26,32 @@
 
 **同步不会自动编译**。推送用 `GITHUB_TOKEN`，GitHub 不会为由它产生的事件创建新的 workflow run，所以既不会启动 2–5 小时的编译，也不会 `cancel` 正在跑的编译。想要新固件时，去 Actions 手动运行 `Build LEDE MT7981 firmware`。
 
-## 部署（文件必须先进入默认分支）
+## 重新部署 / 迁移（文件必须在默认分支）
 
-定时工作流只在**默认分支**上的文件中生效，因此 `sync-upstream.yml` 必须位于 `custom/mt7981` 的 `.github/workflows/` 下。两种方式：
+定时工作流只在**默认分支**上的文件中生效，因此 `sync-upstream.yml` 必须位于 `custom/mt7981` 的 `.github/workflows/` 下。当前已部署，以下仅在需要重传或迁到别的 fork 时用到：
 
 - **网页（无需任何凭据）**：打开
   `https://github.com/ywgf88/lede/tree/custom/mt7981/.github/workflows`
   → `Add file` → `Upload files` → 上传本地 `sync-upstream.yml` → `Commit changes`。
   文档 `doc/UPSTREAM-SYNC.md` 可同样上传，非必需。
-- **命令行**：从 fork 全新克隆一份，加入文件后推送（不要直接推本地分析用的
-  浅克隆——本地 `custom/mt7981` 与远端是用 Git Data API 构造的两条不同历史，
-  直接 push 会报 non-fast-forward）：
+- **命令行**：从 fork 克隆一份，加入文件后推送。本地分析用的 `lede-src`
+  已对齐到远端同一 commit，也可以直接改文件后 push：
   ```bash
   git clone -b custom/mt7981 https://github.com/ywgf88/lede.git lede-sync && cd lede-sync
   # 把 sync-upstream.yml 放到 .github/workflows/ 下
-  git add .github/workflows/sync-upstream.yml && git commit -m "ci: sync upstream daily"
+  git add .github/workflows/sync-upstream.yml && git commit -m "ci: sync upstream"
   git push
   ```
 
-放好之后建议先验证一次：Actions → **Sync upstream LEDE** → `Run workflow` → 勾选 `dry_run` → 运行。它只打印上游领先了多少 commit、列出前 15 条日志，不推送任何内容。确认无误后取消勾选再跑一次真实同步。
+验证方式：Actions → **Sync upstream LEDE** → `Run workflow` → 勾选 `dry_run` → 运行。
+**判读结果**：
+
+| 日志输出 | 含义 |
+|---|---|
+| `Upstream advanced by N commits` | 上游有新提交，step summary 会列出前 15 条日志；后面三步因 `dry_run` 被跳过 |
+| `Already up to date at <sha>` | 上游此刻没有新提交，后面三步因 `changed=false` 被跳过，**同样属于正常空转**，不代表 `dry_run` 生效与否 |
+
+无论哪种，dry_run 都不产生任何推送。真要确认开关生效，可在上游有新提交时分别跑一次 `dry_run` 与正式同步对比。
 
 ## 定时与开关
 
