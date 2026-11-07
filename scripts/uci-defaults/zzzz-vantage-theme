@@ -1,0 +1,15 @@
+#!/bin/sh
+# First-boot: force the Vantage theme as the LuCI default.
+# luci-theme-vantage ships its own /etc/uci-defaults/30_luci-theme-vantage,
+# but Lean's 99-default-settings and other late scripts can override the
+# mediaurlbase. This one runs last and wins.
+
+[ -d /www/luci-static/vantage ] || exit 0
+
+uci -q set luci.main.mediaurlbase='/luci-static/vantage'
+uci commit luci
+
+# LuCI caches the theme/menu tree; stale caches show Bootstrap until reboot.
+rm -rf /tmp/luci-modulecache /tmp/luci-indexcache
+
+exit 0

@@ -1,0 +1,16 @@
+# Extra feeds for the MT7981 custom build.
+# scripts/prepare.sh appends this file to feeds.conf.default exactly once.
+#
+# Verified on 2026-11-07:
+#  * xiaorouji/openwrt-passwall2 is GONE (404). Upstream moved to the
+#    Openwrt-Passwall organisation; that is the URL used below.
+#  * openwrt-passwall-packages still exists under xiaorouji and supplies
+#    xray-core / sing-box / chinadns-ng / geoview / v2ray-geoip etc.
+#  * anothaDev/luci-theme-vantage is a proper OpenWrt package feed: its
+#    root contains luci-theme-vantage/Makefile and luci-app-vantage/Makefile.
+#    It supports OpenWrt 24.10 (opkg/.ipk) and 25.12 (apk).
+#  * fw876/helloworld (already in feeds.conf.default) provides ssr-plus.
+
+src-git passwall_packages https://github.com/xiaorouji/openwrt-passwall-packages.git;main
+src-git passwall2 https://github.com/Openwrt-Passwall/openwrt-passwall2.git;main
+src-git vantage https://github.com/anothaDev/luci-theme-vantage.git;main

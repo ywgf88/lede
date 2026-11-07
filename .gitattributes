@@ -1,1 +1,12 @@
 * -text
+
+# Files added by the MT7981 custom build must stay LF on Linux runners.
+# Scoped narrowly so upstream files keep their original attributes.
+scripts/prepare.sh text eol=lf
+scripts/check-size.sh text eol=lf
+scripts/uci-defaults/zzzz-ipv4-only text eol=lf
+scripts/uci-defaults/zzzz-vantage-theme text eol=lf
+.github/workflows/build-mt7981.yml text eol=lf
+configs/mt7981.seed text eol=lf
+configs/feeds.custom text eol=lf
+doc/CUSTOM-BUILD.md text eol=lf

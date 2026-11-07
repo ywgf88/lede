@@ -1,0 +1,45 @@
+#!/bin/sh
+# First-boot: IPv4-only default network.
+# "zzzz" prefix makes this run AFTER board.d/02_network (which creates
+# wan6 / ip6assign / ula_prefix) and after Lean's 99-default-settings.
+# Kernel IPv6 support is intentionally kept (CONFIG_IPV6 is def_bool y and
+# some proxy cores link against it); only the IPv6 *configuration* is removed.
+
+[ -f /etc/config/network ] || exit 0
+
+uci -q batch <<'EOF'
+delete network.wan6
+delete network.globals.ula_prefix
+delete network.lan.ip6assign
+delete network.lan.ip6hint
+delete network.lan.ip6ifaceid
+set network.lan.proto='static'
+set network.lan.ipaddr='192.168.1.1'
+set network.lan.netmask='255.255.255.0'
+set network.wan.proto='dhcp'
+set network.wan.ipv6='0'
+EOF
+uci commit network
+
+# Disable RA / DHCPv6 / NDP on every existing dhcp section, and filter AAAA
+# records so clients do not try IPv6 addresses that will never route.
+for s in lan wan guest; do
+	[ -n "$(uci -q get dhcp."$s" 2>/dev/null)" ] || continue
+	uci -q set dhcp."$s".ra='disabled'
+	uci -q set dhcp."$s".dhcpv6='disabled'
+	uci -q set dhcp."$s".ndp='disabled'
+done
+
+i=0
+while uci -q get dhcp.@dnsmasq["$i"] >/dev/null 2>&1; do
+	uci -q set dhcp.@dnsmasq["$i"].filter_aaaa='1'
+	i=$((i + 1))
+done
+uci commit dhcp
+
+if [ -x /etc/init.d/odhcpd ]; then
+	/etc/init.d/odhcpd disable 2>/dev/null
+	/etc/init.d/odhcpd stop 2>/dev/null
+fi
+
+exit 0

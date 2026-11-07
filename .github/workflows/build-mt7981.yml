@@ -1,0 +1,121 @@
+name: Build LEDE MT7981 firmware
+
+# Cloud build. This machine is Windows + Git Bash with WSL disabled, so the
+# firmware is compiled on GitHub-hosted Ubuntu runners instead.
+# One job builds all three devices in a single toolchain run (much faster
+# than three jobs each rebuilding the cross toolchain).
+
+on:
+  workflow_dispatch:
+    inputs:
+      devices:
+        description: "Space-separated device profiles"
+        required: true
+        default: "cetron_ct3003 cmcc_rax3000m-nand qihoo_360t7"
+      max_mib:
+        description: "Firmware size limit in MiB"
+        required: true
+        default: "58"
+  push:
+    branches:
+      - custom/mt7981
+    paths:
+      - "configs/**"
+      - "scripts/**"
+      - ".github/workflows/build-mt7981.yml"
+
+concurrency:
+  group: lede-mt7981-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEVICES: ${{ inputs.devices || 'cetron_ct3003 cmcc_rax3000m-nand qihoo_360t7' }}
+  LIMIT_MIB: ${{ inputs.max_mib || '58' }}
+  BUILD_DIR: /mnt/lede
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Free disk space and prepare /mnt build volume
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/share/boost /opt/ghc \
+                      /usr/local/lib/android /opt/hostedtoolcache/CodeQL \
+                      /usr/share/swift /usr/local/.ghcup 2>/dev/null || true
+          sudo mkdir -p /mnt/lede
+          sudo chown -R "$USER:$USER" /mnt
+          echo "Disk after cleanup:"
+          df -h / /mnt
+
+      - name: Install OpenWrt build dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+            bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib \
+            g++-multilib gettext genisoimage git gperf haveged help2man intltool libc6-dev-i386 \
+            libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev \
+            libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev \
+            libssl-dev libtool llvm lrzsz libnsl-dev ninja-build p7zip p7zip-full patch \
+            pkgconf python3 python3-pyelftools python3-setuptools qemu-utils rsync scons \
+            squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto \
+            xxd xz-utils zlib1g-dev
+          git config --global user.email "builder@users.noreply.github.com"
+          git config --global user.name "OpenWrt Builder"
+          git config --global core.autocrlf false
+
+      - name: Copy source tree to /mnt (larger volume)
+        run: |
+          cp -a "$GITHUB_WORKSPACE/." "$BUILD_DIR/"
+          echo "Source tree size:"; du -sh "$BUILD_DIR"
+
+      - name: Prepare feeds, .config and first-boot files
+        working-directory: /mnt/lede
+        run: |
+          export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          bash scripts/prepare.sh
+
+      - name: Download all source tarballs
+        working-directory: /mnt/lede
+        run: |
+          export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          make download -j8 || make download -j1 V=s
+
+      - name: Compile (parallel, retry single-threaded on race)
+        working-directory: /mnt/lede
+        run: |
+          export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          make -j"$(nproc)" V=s || make -j1 V=s
+
+      - name: Enforce the 58 MiB budget
+        id: size
+        working-directory: /mnt/lede
+        run: bash scripts/check-size.sh
+
+      - name: Collect images and build config
+        if: always()
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/firmware"
+          find "$BUILD_DIR/bin/targets" -type f \( \
+                -name '*squashfs-sysupgrade*' -o \
+                -name '*squashfs-factory*' -o \
+                -name '*.itb' -o -name '*.bin' -o -name '*.manifest' \
+              \) -exec cp -t "$GITHUB_WORKSPACE/firmware/" {} + 2>/dev/null || true
+          cp "$BUILD_DIR/.config" "$GITHUB_WORKSPACE/firmware/build.config" 2>/dev/null || true
+          cp "$BUILD_DIR/configs/mt7981.diffconfig" "$GITHUB_WORKSPACE/firmware/" 2>/dev/null || true
+          ls -lh "$GITHUB_WORKSPACE/firmware"
+
+      - name: Upload firmware
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lede-mt7981-${{ github.run_number }}
+          path: firmware/
+          retention-days: 14
+          if-no-files-found: warn
