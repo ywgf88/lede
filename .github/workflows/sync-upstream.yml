@@ -1,0 +1,154 @@
+name: Sync upstream LEDE
+
+# Keep the fork's `master` byte-identical to coolsnowwolf/lede:master, then
+# fold those upstream changes into the custom build branch.
+#
+# Branch layout:
+#   master          = pristine upstream mirror (never edited by us)
+#   custom/mt7981   = master + 9 customisation files + both workflows (DEFAULT)
+#
+# Why NOT the web "Sync fork" button / POST /merge-upstream on the default
+# branch: the default branch is custom/mt7981 and carries our customisation
+# layer. merge-upstream would try to make THAT branch match upstream, giving a
+# 409 or discarding our files. Always sync `master` explicitly.
+#
+# All pushes use secrets.GITHUB_TOKEN. GitHub does not create workflow runs for
+# events triggered by GITHUB_TOKEN, so syncing never starts (or cancels) the
+# 2-5 h firmware build. Start a build by hand when you actually want one.
+#
+# Scheduled workflows only run from the DEFAULT branch, so this file must live
+# on custom/mt7981. Public repos also auto-disable schedules after 60 days of
+# inactivity; each successful sync is itself repo activity.
+
+on:
+  schedule:
+    - cron: "23 3 * * 1,4"   # Mon/Thu 03:23 UTC = 11:23 Beijing, off the hour
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Only report the upstream delta, do not push anything"
+        type: boolean
+        default: false
+      skip_custom_merge:
+        description: "Sync master only, leave custom/mt7981 untouched"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: read
+  issues: write
+
+concurrency:
+  group: sync-upstream-lede
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_URL: https://github.com/coolsnowwolf/lede.git
+  MIRROR_BRANCH: master
+  CUSTOM_BRANCH: custom/mt7981
+  BUILD_WORKFLOW: build-mt7981.yml
+  DRY_RUN: ${{ inputs.dry_run || 'false' }}
+  SKIP_CUSTOM: ${{ inputs.skip_custom_merge || 'false' }}
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout fork with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Fetch upstream and measure the delta
+        id: delta
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "$UPSTREAM_URL" 2>/dev/null || \
+            git remote set-url upstream "$UPSTREAM_URL"
+          git fetch origin \
+            "+refs/heads/${MIRROR_BRANCH}:refs/remotes/origin/${MIRROR_BRANCH}" \
+            "+refs/heads/${CUSTOM_BRANCH}:refs/remotes/origin/${CUSTOM_BRANCH}"
+          git fetch --no-tags upstream \
+            "+refs/heads/${MIRROR_BRANCH}:refs/remotes/upstream/${MIRROR_BRANCH}"
+          old=$(git rev-parse "refs/remotes/origin/${MIRROR_BRANCH}")
+          new=$(git rev-parse "refs/remotes/upstream/${MIRROR_BRANCH}")
+          n=$(git rev-list --count "$old..$new")
+          echo "old=$old" >> "$GITHUB_OUTPUT"
+          echo "new=$new" >> "$GITHUB_OUTPUT"
+          if [ "$n" -eq 0 ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Already up to date at ${old:0:12}"
+            echo "## Upstream sync" >> "$GITHUB_STEP_SUMMARY"
+            echo "Already up to date (${old:0:12})." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "Upstream advanced by $n commits: ${old:0:12} -> ${new:0:12}"
+          {
+            echo "## Upstream sync"
+            echo ""
+            echo "$n new commit(s) on coolsnowwolf/lede:master."
+            echo ""
+            echo '```'
+            git log --oneline --no-decorate "$old..$new" | head -15
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fast-forward the mirror branch to upstream
+        if: steps.delta.outputs.changed == 'true' && env.DRY_RUN != 'true'
+        run: |
+          set -euo pipefail
+          git checkout -B "$MIRROR_BRANCH" "refs/remotes/origin/$MIRROR_BRANCH"
+          git merge --ff-only "refs/remotes/upstream/$MIRROR_BRANCH"
+          git push origin "$MIRROR_BRANCH"
+          echo "mirror now at $(git rev-parse --short HEAD)"
+
+      - name: Check whether a firmware build is running
+        id: busy
+        if: steps.delta.outputs.changed == 'true' && env.DRY_RUN != 'true' && env.SKIP_CUSTOM != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          n=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$BUILD_WORKFLOW/runs?status=in_progress&per_page=5" \
+               --jq '.total_count' 2>/dev/null || echo 0)
+          if [ "${n:-0}" -gt 0 ]; then
+            echo "busy=true" >> "$GITHUB_OUTPUT"
+            echo "A firmware build is running; leaving $CUSTOM_BRANCH untouched this round."
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "> Custom-branch merge skipped: a firmware build is in progress." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "busy=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge upstream into the custom branch
+        if: steps.delta.outputs.changed == 'true' && env.DRY_RUN != 'true' && env.SKIP_CUSTOM != 'true' && steps.busy.outputs.busy == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git checkout -B "$CUSTOM_BRANCH" "refs/remotes/origin/$CUSTOM_BRANCH"
+          if git merge --no-edit \
+               -m "sync: merge coolsnowwolf/lede master into $CUSTOM_BRANCH" \
+               "refs/remotes/upstream/$MIRROR_BRANCH"; then
+            git push origin "$CUSTOM_BRANCH"
+            echo "custom branch now at $(git rev-parse --short HEAD)"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Merged into $CUSTOM_BRANCH. Start a firmware build manually when ready." >> "$GITHUB_STEP_SUMMARY"
+          else
+            git merge --abort || true
+            title="Upstream sync needs manual conflict resolution"
+            existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+                       --search "\"$title\" in:title" --json number --jq 'length' 2>/dev/null || echo 0)
+            if [ "${existing:-0}" = "0" ]; then
+              gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" \
+                --body "The scheduled sync could not merge master into $CUSTOM_BRANCH. The mirror branch master IS up to date; only the custom branch is behind. Most likely .gitattributes collided (we modified it). Resolve locally: git checkout $CUSTOM_BRANCH; git remote add upstream $UPSTREAM_URL; git fetch upstream; git merge upstream/master; fix conflicts; git push origin $CUSTOM_BRANCH. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" || true
+            fi
+            echo "::error::Merge conflict. master is synced; $CUSTOM_BRANCH was NOT updated."
+            exit 1
+          fi
